@@ -1,0 +1,31 @@
+{
+  "name": "safeshift-predictor",
+  "version": "1.0.0",
+  "description": "SafeShift Predictor\" es un Sistema Predictivo de Fatiga y Prevención de Riesgos Laborales orientado al sector logístico y de transporte de carga en Chile. El proyecto busca transformar la gestión del capital humano desde un enfoque reactivo hacia un modelo proactivo. Mediante el análisis de datos operativos (horas de turno, descansos compensatorios, turnos de noche), el sistema identifica umbrales críticos de desgaste laboral, permitiendo a las gerencias intervenir tempranamente y reasignar tareas en tiempo real. Esto protege la integridad física de los trabajadores, asegura la continuidad operativa y garantiza el cumplimiento normativo.",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "postinstall": "prisma skills sync || exit 0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Re1ky/safeshift-predictor.git"
+  },
+  "keywords": [],
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/Re1ky/safeshift-predictor/issues"
+  },
+  "homepage": "https://github.com/Re1ky/safeshift-predictor#readme",
+  "devDependencies": {
+    "@types/express": "^5.0.6",
+    "@types/node": "^26.6.3",
+    "prisma": "^8.0.0-rc.17",
+    "ts-node": "^10.9.2",
+    "typescript": "^7.0.2"
+  },
+  "dependencies": {
+    "express": "^5.2.1"
+  }
+}
