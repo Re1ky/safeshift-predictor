@@ -108,20 +108,20 @@ async function main() {
     });
   }
 
-  await prisma.historialReasignacion.create({
-    data: {
-      fecha: '2026-09-27 14:30',
-      trabajadorId: 'w-0',
-      trabajadorOrigen: 'Héctor Tapia S.',
-      rutOrigen: '15.902.431-7',
-      trabajadorReemplazo: 'Juana Pérez G.',
-      accion: 'Bloqueado Preventivo (Descanso 24h)',
-      motivo: 'Exceso de 48h acumuladas en turno rotativo. Descanso obligatorio.',
-      supervisor: 'Supervisor de Turno',
-    },
-  });
+await prisma.historialReasignacion.create({
+  data: {
+    fecha: '2026-09-27 14:30',
+    trabajadorId: 'w-0',
+    trabajadorOrigen: 'Héctor Tapia S.',
+    rutOrigen: '15.902.431-7',
+    trabajadorReemplazo: 'Juana Pérez G.',
+    accion: 'Bloqueado Preventivo (Descanso 24h)',
+    motivo: 'Exceso de 48h acumuladas en turno rotativo. Descanso obligatorio.',
+    supervisor: 'Supervisor de Turno',
+  },
+});
 
-  console.log('¡Base de datos poblada con éxito!');
+console.log('¡Base de datos poblada con éxito!');
 }
 
 main()
