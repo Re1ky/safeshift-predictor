@@ -4,13 +4,34 @@ services:
     container_name: safeshift_postgres
     restart: always
     environment:
-      POSTGRES_USER: admin
-      POSTGRES_PASSWORD: safeshift
-      POSTGRES_DB: safeshift_db
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-safeshift}
+      POSTGRES_DB: ${POSTGRES_DB:-safeshift_db}
     ports:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+
+  backend:
+    build: .
+    container_name: safeshift_backend
+    restart: on-failure
+    ports:
+      - "4000:4000"
+    environment:
+      DATABASE_URL: "postgresql://postgres:safeshift@db:5432/safeshift_db?schema=public"
+      PORT: 4000
+    depends_on:
+      - db
+
+  frontend:
+    build: ./frontend
+    container_name: safeshift_frontend
+    restart: on-failure
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
 
 volumes:
   postgres_data:
