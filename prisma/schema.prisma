@@ -8,23 +8,45 @@ datasource db {
 }
 
 model Trabajador {
-  id                    Int      @id @default(autoincrement())
+  id                    String   @id @default(uuid())
   rut                   String   @unique
   nombre                String
   apellido              String
-  estado_disponibilidad String   @default("DISPONIBLE") 
+  cargo                 String   @default("Operario Logístico")
+  riesgo                Int      @default(15)
+  nivel_riesgo          String   @default("NORMAL") // NORMAL | ALERTA | CRITICO
+  estado_disponibilidad String   @default("DISPONIBLE") // DISPONIBLE | EN_TURNO | BLOQUEADO_PREVENTIVO
+  ultimo_descanso_horas Int      @default(16)
+  sustituto_asignado    String?
+  accion_preventiva     String?
+  motivo_reasignacion   String?
+  fecha_reasignacion    String?
   activo                Boolean  @default(true)
   turnos                Turno[]
 }
 
 model Turno {
-  id                          Int        @id @default(autoincrement())
-  trabajadorId                Int
-  fecha_inicio                DateTime
-  fecha_fin                   DateTime
-  horas_acumuladas_semana     Float
-  descansos_compensatorios    Float
-  noches_consecutivas         Int
-  estado_turno                String     
-  trabajador                  Trabajador @relation(fields: [trabajadorId], references: [id])
+  id                       Int        @id @default(autoincrement())
+  trabajadorId             String
+  tipo_turno               String     @default("Noche") // Noche | Día | Mixto
+  fecha_inicio             DateTime   @default(now())
+  fecha_fin                DateTime
+  horas_acumuladas_semana  Int        @default(45)
+  descansos_compensatorios Int        @default(1)
+  noches_consecutivas      Int        @default(0)
+  estado_turno             String     @default("ACTIVO") // ACTIVO | REASIGNADO | FINALIZADO
+  trabajador               Trabajador @relation(fields: [trabajadorId], references: [id], onDelete: Cascade)
+}
+
+model HistorialReasignacion {
+  id                  Int      @id @default(autoincrement())
+  fecha               String
+  trabajadorId        String
+  trabajadorOrigen    String
+  rutOrigen           String
+  trabajadorReemplazo String
+  accion              String
+  motivo              String
+  supervisor          String   @default("Supervisor de Turno")
+  creadoEn            DateTime @default(now())
 }
