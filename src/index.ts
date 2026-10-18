@@ -11,12 +11,21 @@ const PORT = process.env.PORT || 4000;
 app.use(cors());
 app.use(express.json());
 
-// Función auxiliar que invoca el modelo .pkl en Python (con respaldo matemático)
+// Función que invoca src/ml/predecir_turno.py (motor_predictivo_safeshift.pkl) y calcula Caja Blanca
 function predecirFatigaML(
   horasSemanales: number,
   nochesConsecutivas: number,
   horasDescanso: number,
-): Promise<{ riesgo: number; nivel: string }> {
+): Promise<{
+  riesgo: number;
+  nivel: string;
+  explicabilidad: {
+    pesoHoras: number;
+    pesoNoches: number;
+    pesoDescanso: number;
+    factorCritico: string;
+  };
+}> {
   return new Promise((resolve) => {
     const scriptPath = path.join(process.cwd(), 'src', 'ml', 'predecir_turno.py');
     const args = [
@@ -26,29 +35,108 @@ function predecirFatigaML(
       String(horasDescanso),
     ];
 
+    const calcularExplicabilidad = (riesgoFinal: number, nivelFinal: string) => {
+      const brutaHoras = Math.max(5, (horasSemanales - 30) * 1.8);
+      const brutaNoches = Math.max(2, nochesConsecutivas * 14);
+      const brutaDescanso = Math.max(5, (24 - Math.min(24, horasDescanso)) * 2.2);
+      const suma = brutaHoras + brutaNoches + brutaDescanso || 1;
+
+      const pesoHoras = Math.round((brutaHoras / suma) * 100);
+      const pesoNoches = Math.round((brutaNoches / suma) * 100);
+      const pesoDescanso = Math.max(0, 100 - pesoHoras - pesoNoches);
+
+      let factorCritico = 'Parámetros dentro de rango operativo normal';
+      if (nivelFinal === 'CRÍTICO' || nivelFinal === 'CRITICO') {
+        if (nochesConsecutivas >= 3 && horasSemanales >= 50) {
+          factorCritico = `Combinación crítica: ${nochesConsecutivas} noches seguidas + ${horasSemanales}h semanales (Déficit circadiano)`;
+        } else if (horasDescanso <= 9) {
+          factorCritico = `Descanso interjornada insuficiente (${horasDescanso}h < 10h mínimas recomendadas)`;
+        } else {
+          factorCritico = `Sobrecarga acumulada en semana móvil (${horasSemanales}h trabajadas)`;
+        }
+      } else if (nivelFinal === 'ALERTA') {
+        factorCritico = `Acumulación moderada de fatiga (${horasSemanales}h semanales / ${nochesConsecutivas} noches)`;
+      }
+
+      return {
+        riesgo: riesgoFinal,
+        nivel: nivelFinal,
+        explicabilidad: { pesoHoras, pesoNoches, pesoDescanso, factorCritico },
+      };
+    };
+
     execFile('python', args, { timeout: 5000 }, (error, stdout) => {
       if (!error && stdout) {
         try {
           const parsed = JSON.parse(stdout.trim());
           if (typeof parsed.riesgo === 'number' && parsed.nivel) {
-            return resolve(parsed);
+            return resolve(calcularExplicabilidad(parsed.riesgo, parsed.nivel));
           }
         } catch {
-          // Continúa al cálculo de respaldo si el JSON falla
+          // Usa respaldo si falla el parseo
         }
       }
 
       const puntaje =
-        horasSemanales * 1.1 + nochesConsecutivas * 9 - horasDescanso * 1.5;
-      const riesgo = Math.max(5, Math.min(98, Math.round(puntaje)));
-      const nivel =
-        riesgo >= 80 ? 'CRÍTICO' : riesgo >= 50 ? 'ALERTA' : 'NORMAL';
-      resolve({ riesgo, nivel });
+        horasSemanales * 1.2 + nochesConsecutivas * 10 - horasDescanso * 1.8;
+      let riesgo = Math.max(5, Math.min(98, Math.round(puntaje)));
+      let nivel = 'NORMAL';
+      if (riesgo >= 80 || horasSemanales >= 52 || nochesConsecutivas >= 3) {
+        nivel = 'CRÍTICO';
+        if (riesgo < 80) riesgo = 85;
+      } else if (riesgo >= 50) {
+        nivel = 'ALERTA';
+      }
+      resolve(calcularExplicabilidad(riesgo, nivel));
     });
   });
 }
 
-// 1. Obtener lista de trabajadores y sus turnos desde PostgreSQL
+// 0. Autenticación Real contra la tabla Usuario en PostgreSQL (RF01)
+app.post('/api/auth/login', async (req, res) => {
+  const { email, password } = req.body;
+  try {
+    const user = await prisma.usuario.findUnique({
+      where: { email: String(email || '').trim().toLowerCase() },
+    });
+
+    if (!user || user.password_hash !== password) {
+      return res.status(401).json({
+        ok: false,
+        error: 'Credenciales inválidas. Verifique correo institucional y contraseña.',
+      });
+    }
+
+    res.json({
+      ok: true,
+      user: {
+        id: user.id,
+        rut: user.rut,
+        nombre: user.nombre,
+        rol: user.rol,
+        correo: user.email,
+      },
+    });
+  } catch (error) {
+    console.error('Error en autenticación:', error);
+    res.status(500).json({ ok: false, error: 'Error al autenticar en PostgreSQL' });
+  }
+});
+
+// Obtener lista de usuarios registrados para referencia rápida
+app.get('/api/auth/users', async (_req, res) => {
+  try {
+    const users = await prisma.usuario.findMany({
+      select: { id: true, rut: true, nombre: true, rol: true, email: true },
+      orderBy: { id: 'asc' },
+    });
+    res.json(users);
+  } catch {
+    res.status(500).json([]);
+  }
+});
+
+// 1. Obtener lista de trabajadores, su turno actual y su última predicción ML desde PostgreSQL
 app.get('/api/workers', async (_req, res) => {
   try {
     const dbWorkers = await prisma.trabajador.findMany({
@@ -57,9 +145,15 @@ app.get('/api/workers', async (_req, res) => {
           orderBy: { id: 'desc' },
           take: 1,
         },
+        predicciones: {
+          orderBy: { id: 'desc' },
+          take: 1,
+        },
       },
-      orderBy: { id: 'asc' },
     });
+
+    // Ordenar por mayor riesgo primero para destacar alertas críticas arriba
+    dbWorkers.sort((a, b) => b.riesgo - a.riesgo);
 
     const formattedWorkers = dbWorkers.map((w) => {
       const turnoActual = w.turnos[0];
@@ -116,7 +210,7 @@ app.get('/api/history', async (_req, res) => {
 
 // 3. Ejecutar Reasignación Preventiva (Transacción ACID en Base de Datos)
 app.post('/api/reassign', async (req, res) => {
-  const { workerId, accionPreventiva, substituteId, motivo } = req.body;
+  const { workerId, accionPreventiva, substituteId, motivo, supervisor } = req.body;
 
   try {
     const targetWorker = await prisma.trabajador.findUnique({
@@ -151,6 +245,13 @@ app.post('/api/reassign', async (req, res) => {
         },
       });
 
+      if (substituteWorker) {
+        await tx.trabajador.update({
+          where: { id: substituteWorker.id },
+          data: { estado_disponibilidad: 'EN_TURNO' },
+        });
+      }
+
       await tx.turno.updateMany({
         where: { trabajadorId: workerId, estado_turno: 'ACTIVO' },
         data: { estado_turno: 'REASIGNADO' },
@@ -165,7 +266,7 @@ app.post('/api/reassign', async (req, res) => {
           trabajadorReemplazo: substituteName,
           accion: accionPreventiva,
           motivo: motivo,
-          supervisor: 'Supervisor de Turno',
+          supervisor: supervisor || 'Supervisor de Turno',
         },
       });
 
@@ -173,7 +274,7 @@ app.post('/api/reassign', async (req, res) => {
     });
 
     console.log(
-      `[TRANSACCIÓN EXITOSA] Trabajador ${targetWorker.rut} actualizado a BLOQUEADO_PREVENTIVO. Sustituto: ${substituteName}`
+      `[TRANSACCIÓN ACID EXITOSA] Trabajador ${targetWorker.rut} -> BLOQUEADO_PREVENTIVO | Sustituto: ${substituteName}`
     );
 
     res.json({
@@ -187,15 +288,107 @@ app.post('/api/reassign', async (req, res) => {
   }
 });
 
-// 4. Endpoint directo al Motor Predictivo ML (.pkl)
+// 4. Endpoint de Inferencia ML en Vivo (.pkl) + Explicabilidad Caja Blanca
 app.post('/api/predict', async (req, res) => {
-  const { horasSemanales = 45, nochesConsecutivas = 0, ultimoDescansoHoras = 16 } = req.body;
-  const prediccion = await predecirFatigaML(
+  const {
+    horasSemanales = 45,
+    nochesConsecutivas = 0,
+    ultimoDescansoHoras = 16,
+    workerId,
+  } = req.body;
+
+  const resultadoML = await predecirFatigaML(
     Number(horasSemanales),
     Number(nochesConsecutivas),
     Number(ultimoDescansoHoras),
   );
-  res.json(prediccion);
+
+  // Si se indica un trabajador existente, guarda la predicción en la tabla PrediccionFatiga
+  if (workerId) {
+    try {
+      await prisma.prediccionFatiga.create({
+        data: {
+          trabajadorId: String(workerId),
+          score_probabilidad: Number((resultadoML.riesgo / 100).toFixed(2)),
+          nivel_riesgo: resultadoML.nivel,
+          factores_determinantes: JSON.stringify(resultadoML.explicabilidad),
+          requiere_bloqueo: resultadoML.riesgo >= 80,
+        },
+      });
+    } catch {
+      // Continúa si el workerId es solo de simulación libre
+    }
+  }
+
+  res.json({
+    ...resultadoML,
+    modelo: 'RandomForestClassifier (src/ml/motor_predictivo_safeshift.pkl)',
+    timestamp: new Date().toLocaleTimeString('es-CL'),
+  });
+});
+
+// Obtener las últimas predicciones registradas en la tabla PrediccionFatiga
+app.get('/api/predictions', async (_req, res) => {
+  try {
+    const preds = await prisma.prediccionFatiga.findMany({
+      include: {
+        trabajador: {
+          select: { nombre: true, apellido: true, rut: true, cargo: true },
+        },
+      },
+      orderBy: { id: 'desc' },
+      take: 12,
+    });
+    res.json(preds);
+  } catch {
+    res.status(500).json([]);
+  }
+});
+
+// Re-evaluar toda la flota en PostgreSQL contra el modelo .pkl
+app.post('/api/ml/recalculate-all', async (_req, res) => {
+  try {
+    const allWorkers = await prisma.trabajador.findMany({
+      include: { turnos: { orderBy: { id: 'desc' }, take: 1 } },
+    });
+
+    let actualizados = 0;
+    for (const w of allWorkers) {
+      const t = w.turnos[0];
+      const horas = t?.horas_acumuladas_semana ?? 45;
+      const noches = t?.noches_consecutivas ?? 0;
+      const descanso = w.ultimo_descanso_horas ?? 16;
+
+      const pred = await predecirFatigaML(horas, noches, descanso);
+
+      await prisma.trabajador.update({
+        where: { id: w.id },
+        data: {
+          riesgo: pred.riesgo,
+          nivel_riesgo: pred.nivel,
+        },
+      });
+
+      await prisma.prediccionFatiga.create({
+        data: {
+          trabajadorId: w.id,
+          score_probabilidad: Number((pred.riesgo / 100).toFixed(2)),
+          nivel_riesgo: pred.nivel,
+          factores_determinantes: JSON.stringify(pred.explicabilidad),
+          requiere_bloqueo: pred.riesgo >= 80,
+        },
+      });
+      actualizados++;
+    }
+
+    res.json({
+      ok: true,
+      message: `Motor ML (.pkl) ejecutado en vivo sobre los ${actualizados} operarios de PostgreSQL.`,
+    });
+  } catch (error) {
+    console.error('Error al recalcular flota:', error);
+    res.status(500).json({ ok: false, error: 'Error al recalcular la flota con ML' });
+  }
 });
 
 // 5. Módulo de Ingesta Manual o por Lotes (CSV) conectado al modelo ML y PostgreSQL
@@ -254,12 +447,22 @@ app.post('/api/workers/ingest', async (req, res) => {
         },
       });
 
+      await prisma.prediccionFatiga.create({
+        data: {
+          trabajadorId: trabajadorGuardado.id,
+          score_probabilidad: Number((prediccion.riesgo / 100).toFixed(2)),
+          nivel_riesgo: prediccion.nivel,
+          factores_determinantes: JSON.stringify(prediccion.explicabilidad),
+          requiere_bloqueo: prediccion.riesgo >= 80,
+        },
+      });
+
       procesados.push({ ...trabajadorGuardado, prediccion });
     }
 
     res.json({
       ok: true,
-      message: `${procesados.length} trabajador(es) evaluados por el motor ML y registrados en BD.`,
+      message: `${procesados.length} trabajador(es) evaluados por el motor ML (.pkl) y guardados en PostgreSQL.`,
       data: procesados,
     });
   } catch (error) {

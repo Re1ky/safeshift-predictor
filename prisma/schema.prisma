@@ -7,22 +7,34 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+model Usuario {
+  id            Int      @id @default(autoincrement())
+  rut           String   @unique
+  nombre        String
+  rol           String   @default("Supervisor de Turno") // Supervisor de Turno | Analista RRHH / Prevencionista | Administrador TI
+  email         String   @unique
+  password_hash String
+  activo        Boolean  @default(true)
+  creadoEn      DateTime @default(now())
+}
+
 model Trabajador {
-  id                    String   @id @default(uuid())
-  rut                   String   @unique
+  id                    String             @id @default(uuid())
+  rut                   String             @unique
   nombre                String
   apellido              String
-  cargo                 String   @default("Operario Logístico")
-  riesgo                Int      @default(15)
-  nivel_riesgo          String   @default("NORMAL") // NORMAL | ALERTA | CRITICO
-  estado_disponibilidad String   @default("DISPONIBLE") // DISPONIBLE | EN_TURNO | BLOQUEADO_PREVENTIVO
-  ultimo_descanso_horas Int      @default(16)
+  cargo                 String             @default("Operario Logístico")
+  riesgo                Int                @default(15)
+  nivel_riesgo          String             @default("NORMAL") // NORMAL | ALERTA | CRITICO
+  estado_disponibilidad String             @default("DISPONIBLE") // DISPONIBLE | EN_TURNO | BLOQUEADO_PREVENTIVO
+  ultimo_descanso_horas Int                @default(16)
   sustituto_asignado    String?
   accion_preventiva     String?
   motivo_reasignacion   String?
   fecha_reasignacion    String?
-  activo                Boolean  @default(true)
+  activo                Boolean            @default(true)
   turnos                Turno[]
+  predicciones          PrediccionFatiga[]
 }
 
 model Turno {
@@ -36,6 +48,17 @@ model Turno {
   noches_consecutivas      Int        @default(0)
   estado_turno             String     @default("ACTIVO") // ACTIVO | REASIGNADO | FINALIZADO
   trabajador               Trabajador @relation(fields: [trabajadorId], references: [id], onDelete: Cascade)
+}
+
+model PrediccionFatiga {
+  id                     Int        @id @default(autoincrement())
+  trabajadorId           String
+  fecha_calculo          DateTime   @default(now())
+  score_probabilidad     Float      @default(0.15)
+  nivel_riesgo           String     @default("NORMAL")
+  factores_determinantes String     // JSON con pesos de variables (Caja Blanca)
+  requiere_bloqueo       Boolean    @default(false)
+  trabajador             Trabajador @relation(fields: [trabajadorId], references: [id], onDelete: Cascade)
 }
 
 model HistorialReasignacion {
