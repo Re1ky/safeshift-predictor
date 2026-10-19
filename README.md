@@ -73,6 +73,7 @@ graph LR
     ORM -- "Consultas Tipadas y Transacciones" --> DB
     API -- "execFile(horas, noches, descanso)" --> PY
     PY -- "joblib.load()" --> PKL
+```
 
 ## 6. Instrucciones para Ejecución Local
 *(Nota: Estas instrucciones se irán actualizando durante la Fase 2 del desarrollo).*
