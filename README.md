@@ -74,7 +74,7 @@ graph LR
     API -- "execFile(horas, noches, descanso)" --> PY
     PY -- "joblib.load()" --> PKL
 
-## 6. # Instrucciones para Ejecución Local
+## 6. Instrucciones para Ejecución Local
 *(Nota: Estas instrucciones se irán actualizando durante la Fase 2 del desarrollo).*
 1. Clonar este repositorio: `git clone https://github.com/tu-usuario/safeshift-predictor.git`
 2. Instalar Docker Desktop en la máquina local.
