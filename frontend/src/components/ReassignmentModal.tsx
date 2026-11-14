@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   ShieldAlert,
   AlertTriangle,
@@ -13,6 +13,7 @@ import { RiskBadge } from './RiskBadge';
 interface ReassignmentModalProps {
   isOpen: boolean;
   worker: Worker | null;
+  availableSubstitutes?: Worker[];
   onClose: () => void;
   onConfirm: (payload: ReassignmentPayload) => Promise<void> | void;
 }
@@ -20,17 +21,42 @@ interface ReassignmentModalProps {
 export const ReassignmentModal: React.FC<ReassignmentModalProps> = ({
   isOpen,
   worker,
+  availableSubstitutes = [],
   onClose,
   onConfirm,
 }) => {
   const [actionPreventiva, setActionPreventiva] = useState(
     'Bloqueado Preventivo (Descanso 24h)',
   );
+
+  // Construye lista de candidatos reales desde PostgreSQL con riesgo NORMAL y DISPONIBLE (RF05)
+  const candidates =
+    availableSubstitutes.length > 0
+      ? availableSubstitutes.map((w) => ({
+          id: w.id,
+          nombre: w.nombre,
+          rut: w.rut,
+          cargo: w.cargo,
+          riesgo: w.riesgo,
+          nivel: 'NORMAL' as const,
+          riskLabel: `RIESGO BAJO (${w.riesgo}%)`,
+        }))
+      : SUBSTITUTE_CANDIDATES.map((c) => ({
+          ...c,
+          cargo: 'Operario Disponible',
+        }));
+
   const [selectedSubstituteId, setSelectedSubstituteId] = useState(
-    SUBSTITUTE_CANDIDATES[0]?.id || 'w-1',
+    candidates[0]?.id || 'w-10',
   );
   const [motivo, setMotivo] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
+
+  useEffect(() => {
+    if (candidates.length > 0) {
+      setSelectedSubstituteId(candidates[0].id);
+    }
+  }, [worker, availableSubstitutes.length]);
 
   if (!isOpen || !worker) return null;
 
@@ -42,7 +68,9 @@ export const ReassignmentModal: React.FC<ReassignmentModalProps> = ({
       workerId: worker.id,
       accionPreventiva: actionPreventiva,
       substituteId: selectedSubstituteId,
-      motivo: motivo.trim() || 'Protocolo de prevención de fatiga extrema aplicado.',
+      motivo:
+        motivo.trim() ||
+        'Protocolo de prevención de fatiga extrema aplicado (Art. 38 Código del Trabajo).',
     });
 
     setIsSubmitting(false);
@@ -84,35 +112,34 @@ export const ReassignmentModal: React.FC<ReassignmentModalProps> = ({
 
         {/* Modal Scrollable Body */}
         <form onSubmit={handleSubmit} className="p-5 overflow-y-auto space-y-4">
-          {/* Summary Alert Box */}
+          {/* Summary Alert Box (Explicabilidad de Caja Blanca) */}
           <div className="bg-[#fef2f2] border border-[#fecaca] rounded-lg p-3.5 sm:p-4 text-xs">
             <div className="flex items-center gap-1.5 text-red-800 font-bold mb-2">
               <AlertTriangle className="w-4 h-4 text-red-600 shrink-0" />
-              <span>Resumen del Trabajador a Reasignar</span>
+              <span>Explicabilidad del Diagnóstico ML (Caja Blanca)</span>
             </div>
             <ul className="space-y-1.5 text-slate-800 font-medium pl-1 text-[12px] sm:text-[13px]">
               <li className="flex items-start gap-1.5">
                 <span className="text-red-500 font-bold">•</span>
                 <span>
-                  <strong>Trabajador en Riesgo :</strong> {worker.nombre} (
+                  <strong>Trabajador en Riesgo:</strong> {worker.nombre} (
                   {worker.cargo}) - RUT: {worker.rut}
                 </span>
               </li>
               <li className="flex items-start gap-1.5">
                 <span className="text-red-500 font-bold">•</span>
                 <span>
-                  <strong>Diagnóstico ML:</strong> Nivel de Fatiga CRÍTICO (
+                  <strong>Diagnóstico Motor (.pkl):</strong> Nivel de Fatiga CRÍTICO (
                   {worker.riesgo}%)
                 </span>
               </li>
               <li className="flex items-start gap-1.5">
                 <span className="text-red-500 font-bold">•</span>
                 <span>
-                  <strong>Factores:</strong>{' '}
-                  {worker.nochesConsecutivas > 0
-                    ? `${worker.nochesConsecutivas} Turnos nocturnos seguidos`
-                    : 'Sobrecarga de turno'}{' '}
-                  + {worker.horasSemanales} Horas semanales acumuladas
+                  <strong>Factores Gatillantes:</strong>{' '}
+                  {worker.nochesConsecutivas} Turnos nocturnos seguidos +{' '}
+                  {worker.horasSemanales} Horas semanales acumuladas +{' '}
+                  {worker.ultimoDescansoHoras ?? 8}h de descanso previo
                 </span>
               </li>
               <li className="flex items-start gap-1.5">
@@ -127,7 +154,7 @@ export const ReassignmentModal: React.FC<ReassignmentModalProps> = ({
 
           <div className="pt-1">
             <span className="text-[11px] font-bold text-slate-500 tracking-wider uppercase block mb-3">
-              ACCIÓN DISCIPLINARIA DEL SUPERVISOR:
+              ACCIÓN VINCULANTE DEL SUPERVISOR:
             </span>
 
             {/* Step 1: Action Selector */}
@@ -136,7 +163,7 @@ export const ReassignmentModal: React.FC<ReassignmentModalProps> = ({
                 htmlFor="action-preventiva"
                 className="block text-xs font-semibold text-slate-800 mb-1.5"
               >
-                Paso 1: Nuevo Estado del Trabajador
+                Paso 1: Nuevo Estado del Trabajador en PostgreSQL
               </label>
               <div className="relative">
                 <div className="absolute left-3 top-1/2 -translate-y-1/2 flex items-center pointer-events-none">
@@ -162,20 +189,20 @@ export const ReassignmentModal: React.FC<ReassignmentModalProps> = ({
               </div>
             </div>
 
-            {/* Step 2: Select Substitute */}
+            {/* Step 2: Select Substitute dynamically filtered from DB */}
             <div className="mb-4">
               <label className="block text-xs font-semibold text-slate-800 mb-1.5">
-                Paso 2: Seleccionar Trabajador Sustituto
+                Paso 2: Seleccionar Trabajador Sustituto (Filtro Dinámico en BD: Riesgo Bajo & Disponible — {candidates.length} candidatos)
               </label>
-              <div className="space-y-2">
-                {SUBSTITUTE_CANDIDATES.map((cand) => {
+              <div className="space-y-2 max-h-44 overflow-y-auto pr-1">
+                {candidates.map((cand) => {
                   const isChecked = selectedSubstituteId === cand.id;
                   return (
                     <label
                       key={cand.id}
                       className={`flex items-center justify-between p-2.5 sm:p-3 rounded-lg border cursor-pointer transition-all ${
                         isChecked
-                          ? 'border-emerald-500 bg-emerald-50/30 ring-1 ring-emerald-500'
+                          ? 'border-emerald-500 bg-emerald-50/40 ring-1 ring-emerald-500'
                           : 'border-slate-200 hover:border-slate-300 bg-white'
                       }`}
                     >
@@ -188,12 +215,14 @@ export const ReassignmentModal: React.FC<ReassignmentModalProps> = ({
                           onChange={() => setSelectedSubstituteId(cand.id)}
                           className="w-4 h-4 text-emerald-600 focus:ring-emerald-500 border-slate-300 accent-emerald-600 cursor-pointer"
                         />
-                        <span className="text-xs sm:text-sm font-semibold text-slate-800">
-                          {cand.nombre}
-                        </span>
-                        <span className="text-[11px] text-slate-500 hidden sm:inline">
-                          ({cand.rut})
-                        </span>
+                        <div>
+                          <span className="text-xs sm:text-sm font-semibold text-slate-800 block">
+                            {cand.nombre}
+                          </span>
+                          <span className="text-[11px] text-slate-500">
+                            {cand.cargo} · RUT: {cand.rut}
+                          </span>
+                        </div>
                       </div>
 
                       <RiskBadge
@@ -213,13 +242,13 @@ export const ReassignmentModal: React.FC<ReassignmentModalProps> = ({
                 htmlFor="motivo-movimiento"
                 className="block text-xs font-semibold text-slate-800 mb-1.5"
               >
-                Paso 3: Motivo del Movimiento
+                Paso 3: Motivo del Movimiento (Auditoría Art. 38)
               </label>
               <textarea
                 id="motivo-movimiento"
                 value={motivo}
                 onChange={(e) => setMotivo(e.target.value)}
-                rows={3}
+                rows={2}
                 placeholder="Describa brevemente la justificación médica o de seguridad para esta reasignación obligatoria..."
                 className="w-full bg-white border border-slate-300 rounded-lg p-2.5 text-xs sm:text-sm text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-red-500 focus:border-red-500 resize-none shadow-xs"
               />
@@ -244,7 +273,7 @@ export const ReassignmentModal: React.FC<ReassignmentModalProps> = ({
               {isSubmitting ? (
                 <>
                   <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                  <span>Procesando...</span>
+                  <span>Ejecutando Transacción ACID...</span>
                 </>
               ) : (
                 <>

@@ -11,27 +11,37 @@ services:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d safeshift_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
 
   backend:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile
     container_name: safeshift_backend
     restart: on-failure
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: "postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-safeshift}@db:5432/${POSTGRES_DB:-safeshift_db}?schema=public"
+      PORT: 4000
     ports:
       - "4000:4000"
-    environment:
-      DATABASE_URL: "postgresql://postgres:safeshift@db:5432/safeshift_db?schema=public"
-      PORT: 4000
-    depends_on:
-      - db
 
   frontend:
-    build: ./frontend
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
     container_name: safeshift_frontend
     restart: on-failure
-    ports:
-      - "3000:3000"
     depends_on:
       - backend
+    ports:
+      - "3000:3000"
 
 volumes:
   postgres_data:
