@@ -312,9 +312,13 @@ export default function App() {
         }),
       });
 
-      if (!response.ok) {
-        throw new Error('Error al guardar en la base de datos');
-      }
+    if (!response.ok) {
+      const errData = await response.json().catch(() => ({}));
+      setToastMessage(
+        errData.error || 'Error de concurrencia (HTTP 409): El trabajador ya fue bloqueado.'
+      );
+      return;
+    }
 
       await fetchSystemData();
 
@@ -989,7 +993,11 @@ export default function App() {
 
         {/* PESTAÑA 4: REPORTES */}
         {currentTab === 'reportes' && (
-          <ReportsView onBackToTurnos={() => setCurrentTab('turnos')} />
+          <ReportsView
+            workers={workers}
+            historyRecords={historyRecords}
+            onBackToTurnos={() => setCurrentTab('turnos')}
+          />
         )}
       </main>
 
