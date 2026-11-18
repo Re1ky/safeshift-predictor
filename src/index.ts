@@ -11,7 +11,7 @@ const PORT = process.env.PORT || 4000;
 app.use(cors());
 app.use(express.json());
 
-// Función que invoca src/ml/predecir_turno.py (motor_predictivo_safeshift.pkl) y calcula Caja Blanca
+// Función que invoca src/ml/predecir_turno.py (motor_predictivo_safeshift.pkl) y calcula Caja Blanca atómica
 function predecirFatigaML(
   horasSemanales: number,
   nochesConsecutivas: number,
@@ -92,6 +92,33 @@ function predecirFatigaML(
   });
 }
 
+// Helper 3FN: resuelve la clave foránea usuarioId a partir del id numérico o nombre/rol del supervisor activo
+async function resolverUsuarioId(
+  usuarioIdInput?: unknown,
+  supervisorInput?: string,
+): Promise<number> {
+  if (typeof usuarioIdInput === 'number' && Number.isInteger(usuarioIdInput)) {
+    const existe = await prisma.usuario.findUnique({ where: { id: usuarioIdInput } });
+    if (existe) return existe.id;
+  }
+
+  const usuarios = await prisma.usuario.findMany({ orderBy: { id: 'asc' } });
+  if (usuarios.length === 0) {
+    throw new Error('No existen cuentas en la tabla Usuario para firmar la auditoría 3FN.');
+  }
+
+  if (supervisorInput) {
+    const texto = supervisorInput.toLowerCase();
+    const porNombre = usuarios.find((u) => texto.includes(u.nombre.toLowerCase()));
+    if (porNombre) return porNombre.id;
+
+    const porRol = usuarios.find((u) => texto.includes(u.rol.toLowerCase()));
+    if (porRol) return porRol.id;
+  }
+
+  return usuarios[0].id;
+}
+
 // 0. Endpoint de Salud del Servicio (Healthcheck para Docker y QA)
 app.get('/api/health', async (_req, res) => {
   try {
@@ -99,7 +126,7 @@ app.get('/api/health', async (_req, res) => {
     res.json({
       ok: true,
       servicio: 'SafeShift Predictor Backend API',
-      estadoBD: 'Conectado a PostgreSQL (safeshift_db)',
+      estadoBD: 'Conectado a PostgreSQL (safeshift_db) — Normalizado 3FN',
       operariosRegistrados: totalWorkers,
       timestamp: new Date().toISOString(),
     });
@@ -154,7 +181,7 @@ app.get('/api/auth/users', async (_req, res) => {
   }
 });
 
-// 2. Obtener lista de trabajadores, su turno actual y su última predicción ML desde PostgreSQL
+// 2. Obtener lista de trabajadores ensamblada vía JOIN 3FN (Trabajador + Turno + PrediccionFatiga + HistorialReasignacion)
 app.get('/api/workers', async (_req, res) => {
   try {
     const dbWorkers = await prisma.trabajador.findMany({
@@ -167,13 +194,24 @@ app.get('/api/workers', async (_req, res) => {
           orderBy: { id: 'desc' },
           take: 1,
         },
+        reasignacionesOrigen: {
+          include: {
+            trabajadorReemplazo: true,
+          },
+          orderBy: { id: 'desc' },
+          take: 1,
+        },
       },
     });
 
-    dbWorkers.sort((a, b) => b.riesgo - a.riesgo);
-
     const formattedWorkers = dbWorkers.map((w) => {
       const turnoActual = w.turnos[0];
+      const predActual = w.predicciones[0];
+      const ultimaReasignacion =
+        w.estado_disponibilidad === 'BLOQUEADO_PREVENTIVO'
+          ? w.reasignacionesOrigen[0]
+          : undefined;
+
       return {
         id: w.id,
         rut: w.rut,
@@ -182,17 +220,20 @@ app.get('/api/workers', async (_req, res) => {
         turno: (turnoActual?.tipo_turno || 'Noche') as 'Noche' | 'Día' | 'Mixto',
         horasSemanales: turnoActual?.horas_acumuladas_semana ?? 45,
         nochesConsecutivas: turnoActual?.noches_consecutivas ?? 0,
-        riesgo: w.riesgo,
-        nivel: w.nivel_riesgo,
+        riesgo: predActual?.riesgo_porcentaje ?? 15,
+        nivel: predActual?.nivel_riesgo ?? 'NORMAL',
         estadoDisponibilidad: w.estado_disponibilidad,
         ultimoDescansoHoras: w.ultimo_descanso_horas,
-        sustitutoAsignado: w.sustituto_asignado || undefined,
-        accionPreventiva: w.accion_preventiva || undefined,
-        motivoReasignacion: w.motivo_reasignacion || undefined,
-        fechaReasignacion: w.fecha_reasignacion || undefined,
+        sustitutoAsignado: ultimaReasignacion?.trabajadorReemplazo
+          ? `${ultimaReasignacion.trabajadorReemplazo.nombre} ${ultimaReasignacion.trabajadorReemplazo.apellido}`.trim()
+          : undefined,
+        accionPreventiva: ultimaReasignacion?.accion || undefined,
+        motivoReasignacion: ultimaReasignacion?.motivo || undefined,
+        fechaReasignacion: ultimaReasignacion?.fecha || undefined,
       };
     });
 
+    formattedWorkers.sort((a, b) => b.riesgo - a.riesgo);
     res.json(formattedWorkers);
   } catch (error) {
     console.error('Error al obtener trabajadores:', error);
@@ -200,22 +241,29 @@ app.get('/api/workers', async (_req, res) => {
   }
 });
 
-// 3. Obtener el historial transaccional de RRHH (Art. 38)
+// 3. Obtener el historial transaccional de RRHH (JOIN 3FN contra Trabajador Origen, Reemplazo y Usuario)
 app.get('/api/history', async (_req, res) => {
   try {
     const records = await prisma.historialReasignacion.findMany({
+      include: {
+        trabajadorOrigen: true,
+        trabajadorReemplazo: true,
+        usuario: true,
+      },
       orderBy: { id: 'desc' },
     });
 
     const formattedHistory = records.map((r) => ({
       id: `hist-${r.id}`,
       fecha: r.fecha,
-      trabajadorOrigen: r.trabajadorOrigen,
-      rutOrigen: r.rutOrigen,
-      trabajadorReemplazo: r.trabajadorReemplazo,
+      trabajadorOrigen: `${r.trabajadorOrigen.nombre} ${r.trabajadorOrigen.apellido}`.trim(),
+      rutOrigen: r.trabajadorOrigen.rut,
+      trabajadorReemplazo: r.trabajadorReemplazo
+        ? `${r.trabajadorReemplazo.nombre} ${r.trabajadorReemplazo.apellido}`.trim()
+        : 'Reincorporación Titular',
       accion: r.accion,
       motivo: r.motivo,
-      supervisor: r.supervisor,
+      supervisor: `${r.usuario.nombre} (${r.usuario.rol})`,
     }));
 
     res.json(formattedHistory);
@@ -225,9 +273,9 @@ app.get('/api/history', async (_req, res) => {
   }
 });
 
-// 4. Ejecutar Reasignación Preventiva con Control de Concurrencia RNF02 y Transacción ACID
+// 4. Ejecutar Reasignación Preventiva con Control de Concurrencia RNF02 y Transacción ACID en 3FN
 app.post('/api/reassign', async (req, res) => {
-  const { workerId, accionPreventiva, substituteId, motivo, supervisor } = req.body;
+  const { workerId, accionPreventiva, substituteId, motivo, supervisor, usuarioId } = req.body;
 
   try {
     const targetWorker = await prisma.trabajador.findUnique({
@@ -241,11 +289,10 @@ app.post('/api/reassign', async (req, res) => {
       });
     }
 
-    // VALIDACIÓN DE CONCURRENCIA ESTRICTA (RNF02):
-    // Si otro supervisor ya bloqueó al trabajador en otra sesión, rechaza con HTTP 409 Conflict
+    // VALIDACIÓN DE CONCURRENCIA ESTRICTA (RNF02)
     if (targetWorker.estado_disponibilidad === 'BLOQUEADO_PREVENTIVO') {
       console.warn(
-        `[BLOQUEO CONCURRENCIA RNF02] Solicitud duplicada rechazada para RUT ${targetWorker.rut} (Ya se encuentra en BLOQUEADO_PREVENTIVO).`
+        `[BLOQUEO CONCURRENCIA RNF02] Solicitud duplicada rechazada para RUT ${targetWorker.rut} (Ya se encuentra en BLOQUEADO_PREVENTIVO).`,
       );
       return res.status(409).json({
         ok: false,
@@ -254,16 +301,22 @@ app.post('/api/reassign', async (req, res) => {
     }
 
     const substituteWorker = substituteId
-      ? await prisma.trabajador.findUnique({ where: { id: substituteId } })
+      ? await prisma.trabajador.findUnique({
+          where: { id: substituteId },
+          include: {
+            predicciones: { orderBy: { id: 'desc' }, take: 1 },
+          },
+        })
       : null;
 
-    // VALIDACIÓN DE REGLA DE NEGOCIO RRHH (RF05):
-    // El sustituto no puede estar en nivel CRÍTICO ni bloqueado preventivamente
+    const nivelSustituto = substituteWorker?.predicciones[0]?.nivel_riesgo ?? 'NORMAL';
+
+    // VALIDACIÓN DE REGLA DE NEGOCIO RRHH (RF05)
     if (
       substituteWorker &&
       (substituteWorker.estado_disponibilidad === 'BLOQUEADO_PREVENTIVO' ||
-        substituteWorker.nivel_riesgo === 'CRÍTICO' ||
-        substituteWorker.nivel_riesgo === 'CRITICO')
+        nivelSustituto === 'CRÍTICO' ||
+        nivelSustituto === 'CRITICO')
     ) {
       return res.status(400).json({
         ok: false,
@@ -271,24 +324,15 @@ app.post('/api/reassign', async (req, res) => {
       });
     }
 
-    const substituteName = substituteWorker
-      ? `${substituteWorker.nombre} ${substituteWorker.apellido}`.trim()
-      : 'Juana Pérez G.';
+    const autorizadorId = await resolverUsuarioId(usuarioId, supervisor);
 
     const now = new Date();
     const formattedDate = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')} ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
-    const horaCorta = now.toLocaleTimeString('es-CL', { hour: '2-digit', minute: '2-digit' });
 
     const resultado = await prisma.$transaction(async (tx) => {
       const updatedWorker = await tx.trabajador.update({
         where: { id: workerId },
-        data: {
-          estado_disponibilidad: 'BLOQUEADO_PREVENTIVO',
-          accion_preventiva: accionPreventiva,
-          sustituto_asignado: substituteName,
-          motivo_reasignacion: motivo,
-          fecha_reasignacion: horaCorta,
-        },
+        data: { estado_disponibilidad: 'BLOQUEADO_PREVENTIVO' },
       });
 
       if (substituteWorker) {
@@ -306,26 +350,28 @@ app.post('/api/reassign', async (req, res) => {
       const newHistory = await tx.historialReasignacion.create({
         data: {
           fecha: formattedDate,
-          trabajadorId: workerId,
-          trabajadorOrigen: `${targetWorker.nombre} ${targetWorker.apellido}`.trim(),
-          rutOrigen: targetWorker.rut,
-          trabajadorReemplazo: substituteName,
+          trabajadorOrigenId: workerId,
+          trabajadorReemplazoId: substituteWorker ? substituteWorker.id : null,
+          usuarioId: autorizadorId,
           accion: accionPreventiva,
           motivo: motivo,
-          supervisor: supervisor || 'Supervisor de Turno',
         },
       });
 
       return { updatedWorker, newHistory };
     });
 
+    const nombreSustituto = substituteWorker
+      ? `${substituteWorker.nombre} ${substituteWorker.apellido}`.trim()
+      : 'Sin sustituto';
+
     console.log(
-      `[TRANSACCIÓN ACID EXITOSA] Trabajador ${targetWorker.rut} -> BLOQUEADO_PREVENTIVO | Sustituto: ${substituteName}`
+      `[TRANSACCIÓN ACID 3FN EXITOSA] Trabajador ${targetWorker.rut} -> BLOQUEADO_PREVENTIVO | Sustituto: ${nombreSustituto} | UsuarioId FK: ${autorizadorId}`,
     );
 
     res.json({
       ok: true,
-      message: 'Reasignación guardada transaccionalmente en PostgreSQL',
+      message: 'Reasignación guardada transaccionalmente en PostgreSQL (3FN)',
       data: resultado,
     });
   } catch (error) {
@@ -336,7 +382,7 @@ app.post('/api/reassign', async (req, res) => {
 
 // 5. Rehabilitar Trabajador tras Cumplir Descanso Compensatorio (Cierre de Ciclo Art. 38)
 app.post('/api/workers/release', async (req, res) => {
-  const { workerId, supervisor } = req.body;
+  const { workerId, supervisor, usuarioId } = req.body;
 
   try {
     const targetWorker = await prisma.trabajador.findUnique({
@@ -347,6 +393,11 @@ app.post('/api/workers/release', async (req, res) => {
       return res.status(404).json({ ok: false, error: 'Trabajador no encontrado en la BD' });
     }
 
+    const autorizadorId = await resolverUsuarioId(
+      usuarioId,
+      supervisor || 'Analista RRHH',
+    );
+
     const now = new Date();
     const formattedDate = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')} ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
 
@@ -355,13 +406,7 @@ app.post('/api/workers/release', async (req, res) => {
         where: { id: workerId },
         data: {
           estado_disponibilidad: 'DISPONIBLE',
-          riesgo: 15,
-          nivel_riesgo: 'NORMAL',
           ultimo_descanso_horas: 24,
-          sustituto_asignado: null,
-          accion_preventiva: null,
-          motivo_reasignacion: null,
-          fecha_reasignacion: null,
         },
       });
 
@@ -375,16 +420,27 @@ app.post('/api/workers/release', async (req, res) => {
         },
       });
 
+      await tx.prediccionFatiga.create({
+        data: {
+          trabajadorId: workerId,
+          riesgo_porcentaje: 15,
+          nivel_riesgo: 'NORMAL',
+          peso_horas: 20,
+          peso_noches: 5,
+          peso_descanso: 75,
+          factor_critico: 'Alta preventiva: operario rehabilitado tras descanso compensatorio Art. 38',
+        },
+      });
+
       const historyEntry = await tx.historialReasignacion.create({
         data: {
           fecha: formattedDate,
-          trabajadorId: workerId,
-          trabajadorOrigen: `${targetWorker.nombre} ${targetWorker.apellido}`.trim(),
-          rutOrigen: targetWorker.rut,
-          trabajadorReemplazo: 'Reincorporación Titular',
+          trabajadorOrigenId: workerId,
+          trabajadorReemplazoId: null,
+          usuarioId: autorizadorId,
           accion: 'Alta Preventiva (Descanso 24h/48h Cumplido)',
-          motivo: 'Cumplimiento íntegro de ventana de reposo compensatorio según Art. 38 del Código del Trabajo.',
-          supervisor: supervisor || 'Analista RRHH / Prevencionista',
+          motivo:
+            'Cumplimiento íntegro de ventana de reposo compensatorio según Art. 38 del Código del Trabajo.',
         },
       });
 
@@ -392,7 +448,7 @@ app.post('/api/workers/release', async (req, res) => {
     });
 
     console.log(
-      `[ALTA PREVENTIVA ART. 38] Trabajador ${targetWorker.rut} rehabilitado a estado DISPONIBLE (Riesgo 15% NORMAL)`
+      `[ALTA PREVENTIVA ART. 38] Trabajador ${targetWorker.rut} rehabilitado a estado DISPONIBLE (Riesgo 15% NORMAL)`,
     );
 
     res.json({
@@ -406,7 +462,7 @@ app.post('/api/workers/release', async (req, res) => {
   }
 });
 
-// 6. Endpoint de Inferencia ML en Vivo (.pkl) + Explicabilidad Caja Blanca
+// 6. Endpoint de Inferencia ML en Vivo (.pkl) + Persistencia Atómica 1FN/3FN en PrediccionFatiga
 app.post('/api/predict', async (req, res) => {
   const {
     horasSemanales = 45,
@@ -426,10 +482,12 @@ app.post('/api/predict', async (req, res) => {
       await prisma.prediccionFatiga.create({
         data: {
           trabajadorId: String(workerId),
-          score_probabilidad: Number((resultadoML.riesgo / 100).toFixed(2)),
+          riesgo_porcentaje: resultadoML.riesgo,
           nivel_riesgo: resultadoML.nivel,
-          factores_determinantes: JSON.stringify(resultadoML.explicabilidad),
-          requiere_bloqueo: resultadoML.riesgo >= 80,
+          peso_horas: resultadoML.explicabilidad.pesoHoras,
+          peso_noches: resultadoML.explicabilidad.pesoNoches,
+          peso_descanso: resultadoML.explicabilidad.pesoDescanso,
+          factor_critico: resultadoML.explicabilidad.factorCritico,
         },
       });
     } catch {
@@ -438,7 +496,7 @@ app.post('/api/predict', async (req, res) => {
   }
 
   console.log(
-    `[MOTOR ML .PKL] Entrada: ${horasSemanales}h sem, ${nochesConsecutivas} noches, ${ultimoDescansoHoras}h descanso -> Resultado: ${resultadoML.riesgo}% (${resultadoML.nivel})`
+    `[MOTOR ML .PKL] Entrada: ${horasSemanales}h sem, ${nochesConsecutivas} noches, ${ultimoDescansoHoras}h descanso -> Resultado: ${resultadoML.riesgo}% (${resultadoML.nivel})`,
   );
 
   res.json({
@@ -448,7 +506,7 @@ app.post('/api/predict', async (req, res) => {
   });
 });
 
-// Obtener las últimas predicciones registradas en la tabla PrediccionFatiga
+// Obtener las últimas predicciones registradas en la tabla PrediccionFatiga (compatible con el Frontend)
 app.get('/api/predictions', async (_req, res) => {
   try {
     const preds = await prisma.prediccionFatiga.findMany({
@@ -460,13 +518,36 @@ app.get('/api/predictions', async (_req, res) => {
       orderBy: { id: 'desc' },
       take: 12,
     });
-    res.json(preds);
+
+    const formatted = preds.map((p) => ({
+      id: p.id,
+      trabajadorId: p.trabajadorId,
+      fecha_calculo: p.fecha_calculo,
+      riesgo_porcentaje: p.riesgo_porcentaje,
+      nivel_riesgo: p.nivel_riesgo,
+      peso_horas: p.peso_horas,
+      peso_noches: p.peso_noches,
+      peso_descanso: p.peso_descanso,
+      factor_critico: p.factor_critico,
+      // Campos derivados para mantener 100% compatibilidad con el visor Frontend sin modificar React
+      score_probabilidad: Number((p.riesgo_porcentaje / 100).toFixed(2)),
+      requiere_bloqueo: p.riesgo_porcentaje >= 80,
+      factores_determinantes: JSON.stringify({
+        pesoHoras: p.peso_horas,
+        pesoNoches: p.peso_noches,
+        pesoDescanso: p.peso_descanso,
+        factorCritico: p.factor_critico,
+      }),
+      trabajador: p.trabajador,
+    }));
+
+    res.json(formatted);
   } catch {
     res.status(500).json([]);
   }
 });
 
-// Re-evaluar toda la flota en PostgreSQL contra el modelo .pkl
+// Re-evaluar toda la flota en PostgreSQL contra el modelo .pkl (almacenando predicciones atómicas 3FN)
 app.post('/api/ml/recalculate-all', async (_req, res) => {
   try {
     const allWorkers = await prisma.trabajador.findMany({
@@ -482,27 +563,23 @@ app.post('/api/ml/recalculate-all', async (_req, res) => {
 
       const pred = await predecirFatigaML(horas, noches, descanso);
 
-      await prisma.trabajador.update({
-        where: { id: w.id },
-        data: {
-          riesgo: pred.riesgo,
-          nivel_riesgo: pred.nivel,
-        },
-      });
-
       await prisma.prediccionFatiga.create({
         data: {
           trabajadorId: w.id,
-          score_probabilidad: Number((pred.riesgo / 100).toFixed(2)),
+          riesgo_porcentaje: pred.riesgo,
           nivel_riesgo: pred.nivel,
-          factores_determinantes: JSON.stringify(pred.explicabilidad),
-          requiere_bloqueo: pred.riesgo >= 80,
+          peso_horas: pred.explicabilidad.pesoHoras,
+          peso_noches: pred.explicabilidad.pesoNoches,
+          peso_descanso: pred.explicabilidad.pesoDescanso,
+          factor_critico: pred.explicabilidad.factorCritico,
         },
       });
       actualizados++;
     }
 
-    console.log(`[RECÁLCULO MASIVO ML] ${actualizados} operarios re-evaluados con motor_predictivo_safeshift.pkl`);
+    console.log(
+      `[RECÁLCULO MASIVO ML 3FN] ${actualizados} operarios re-evaluados con motor_predictivo_safeshift.pkl`,
+    );
 
     res.json({
       ok: true,
@@ -514,7 +591,7 @@ app.post('/api/ml/recalculate-all', async (_req, res) => {
   }
 });
 
-// 7. Módulo de Ingesta Manual o por Lotes (CSV) conectado al modelo ML y PostgreSQL
+// 7. Módulo de Ingesta Manual o por Lotes (CSV) conectado al modelo ML y PostgreSQL (3FN)
 app.post('/api/workers/ingest', async (req, res) => {
   try {
     const listaEntrada = Array.isArray(req.body.workers) ? req.body.workers : [req.body];
@@ -542,18 +619,25 @@ app.post('/api/workers/ingest', async (req, res) => {
           nombre,
           apellido,
           cargo: item.cargo || 'Operario Logístico',
-          riesgo: prediccion.riesgo,
-          nivel_riesgo: prediccion.nivel,
           ultimo_descanso_horas: ultimoDescansoHoras,
           estado_disponibilidad: prediccion.nivel === 'CRÍTICO' ? 'EN_TURNO' : 'DISPONIBLE',
+          turnos: {
+            create: {
+              tipo_turno: item.turno || 'Noche',
+              fecha_inicio: new Date(),
+              fecha_fin: new Date(Date.now() + 8 * 60 * 60 * 1000),
+              horas_acumuladas_semana: horasSemanales,
+              noches_consecutivas: nochesConsecutivas,
+              descansos_compensatorios: ultimoDescansoHoras >= 16 ? 2 : 0,
+              estado_turno: 'ACTIVO',
+            },
+          },
         },
         create: {
           rut,
           nombre,
           apellido,
           cargo: item.cargo || 'Operario Logístico',
-          riesgo: prediccion.riesgo,
-          nivel_riesgo: prediccion.nivel,
           ultimo_descanso_horas: ultimoDescansoHoras,
           estado_disponibilidad: prediccion.nivel === 'CRÍTICO' ? 'EN_TURNO' : 'DISPONIBLE',
           turnos: {
@@ -573,17 +657,21 @@ app.post('/api/workers/ingest', async (req, res) => {
       await prisma.prediccionFatiga.create({
         data: {
           trabajadorId: trabajadorGuardado.id,
-          score_probabilidad: Number((prediccion.riesgo / 100).toFixed(2)),
+          riesgo_porcentaje: prediccion.riesgo,
           nivel_riesgo: prediccion.nivel,
-          factores_determinantes: JSON.stringify(prediccion.explicabilidad),
-          requiere_bloqueo: prediccion.riesgo >= 80,
+          peso_horas: prediccion.explicabilidad.pesoHoras,
+          peso_noches: prediccion.explicabilidad.pesoNoches,
+          peso_descanso: prediccion.explicabilidad.pesoDescanso,
+          factor_critico: prediccion.explicabilidad.factorCritico,
         },
       });
 
       procesados.push({ ...trabajadorGuardado, prediccion });
     }
 
-    console.log(`[INGESTA CSV/ML] ${procesados.length} registro(s) evaluados y almacenados en PostgreSQL.`);
+    console.log(
+      `[INGESTA CSV/ML 3FN] ${procesados.length} registro(s) evaluados y almacenados en PostgreSQL.`,
+    );
 
     res.json({
       ok: true,
@@ -597,5 +685,5 @@ app.post('/api/workers/ingest', async (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`Servidor Backend corriendo en http://localhost:${PORT}`);
+  console.log(`Servidor Backend 3FN corriendo en http://localhost:${PORT}`);
 });

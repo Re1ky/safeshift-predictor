@@ -11,7 +11,7 @@
 
 Este manual técnico establece el procedimiento estandarizado para configurar, construir, desplegar y verificar la infraestructura de software del sistema **SafeShift Predictor**. El documento abarca tanto la implantación contenerizada mediante **Docker y Docker Compose** como la ejecución híbrida sobre motores **PostgreSQL** nativos en entornos de laboratorio académico.
 
-El diseño de infraestructura cumple con el Requisito No Funcional de Portabilidad (**RNF-03 / RNF-04**), garantizando que la base de datos relacional, el servidor transaccional Node.js junto al motor de Machine Learning en Python y la interfaz web en React puedan levantarse de manera reproducible en menos de cinco minutos sobre cualquier sistema operativo anfitrión.
+El diseño de infraestructura cumple con el Requisito No Funcional de Portabilidad (**RNF-03 / RNF-04**), garantizando que la base de datos relacional normalizada en Tercera Forma Normal (**3FN**), el servidor transaccional Node.js junto al motor de Machine Learning en Python y la interfaz web en React puedan levantarse de manera reproducible en menos de cinco minutos sobre cualquier sistema operativo anfitrión.
 
 ---
 
@@ -21,14 +21,14 @@ La solución implementa una arquitectura desacoplada de tres capas (**N-Tier**) 
 
 | Servicio | Contenedor | Imagen Base | Puerto | Capa del Sistema |
 | :--- | :--- | :--- | :--- | :--- |
-| **db** | `safeshift_postgres` | `postgres:15-alpine` | `5432` | Persistencia Relacional (5 Tablas) |
+| **db** | `safeshift_postgres` | `postgres:15-alpine` | `5432` | Persistencia Relacional (5 Tablas en 3FN) |
 | **backend** | `safeshift_backend` | `node:22-bookworm-slim` + `Python 3` | `4000` | API REST Transaccional y Motor ML (`.pkl`) |
 | **frontend** | `safeshift_frontend` | `node:22-alpine` | `3000` | Interfaz Web SPA (React 19 + Tailwind) |
 
 ### Detalle funcional de cada contenedor en la red interna del proyecto:
 
-* **Servicio de Base de Datos (`db`):** Ejecuta PostgreSQL 15 con almacenamiento persistente mediante el volumen local `postgres_data`. Aloja la base de datos `safeshift_db` compuesta por las 5 tablas del modelo relacional: `Usuario`, `Trabajador`, `Turno`, `PrediccionFatiga` e `HistorialReasignacion`. Incluye una sonda de salud (`healthcheck`) que valida la disponibilidad del motor antes de iniciar la capa de negocio.
-* **Servicio de Negocio e Inferencia (`backend`):** Combina el entorno de ejecución de Node.js con un entorno de Python 3 provisto de las librerías científicas `scikit-learn`, `pandas`, `numpy` y `joblib`. Ejecuta las migraciones declarativas de Prisma ORM, aplica las transacciones atómicas (`prisma.$transaction`) de reasignación con control de concurrencia estricto (**RNF-02**) e invoca el modelo `motor_predictivo_safeshift.pkl` vía `src/ml/predecir_turno.py` para la evaluación de fatiga con explicabilidad de Caja Blanca.
+* **Servicio de Base de Datos (`db`):** Ejecuta PostgreSQL 15 con almacenamiento persistente mediante el volumen local `postgres_data`. Aloja la base de datos `safeshift_db` normalizada en **Tercera Forma Normal (3FN)** e integrada por 5 tablas relacionales (`Usuario`, `Trabajador`, `Turno`, `PrediccionFatiga` e `HistorialReasignacion`), utilizando claves foráneas estrictas (`trabajadorOrigenId`, `trabajadorReemplazoId` y `usuarioId`) para eliminar redundancias de texto y columnas atómicas (`peso_horas`, `peso_noches`, `peso_descanso`, `factor_critico`) para la explicabilidad del modelo ML. Incluye una sonda de salud (`healthcheck`) que valida la disponibilidad del motor antes de iniciar la capa de negocio.
+* **Servicio de Negocio e Inferencia (`backend`):** Combina el entorno de ejecución de Node.js con un entorno de Python 3 provisto de las librerías científicas `scikit-learn`, `pandas`, `numpy` y `joblib`. Ejecuta la sincronización declarativa de Prisma ORM sobre el esquema 3FN, aplica transacciones atómicas (`prisma.$transaction`) de reasignación con control de concurrencia estricto (**RNF-02**, `HTTP 409 Conflict`) e invoca el modelo `motor_predictivo_safeshift.pkl` vía `src/ml/predecir_turno.py` para la evaluación de fatiga con explicabilidad de Caja Blanca.
 * **Servicio de Presentación (`frontend`):** Sirve la aplicación web construida con React 19, TypeScript, Vite y Tailwind CSS en el puerto `3000`, conectándose con la capa de negocio en el puerto `4000` mediante peticiones HTTP JSON para los perfiles de **Supervisor de Turno** y **Analista RRHH / Prevencionista**.
 
 ---
@@ -186,7 +186,7 @@ docker compose logs -f backend
 
 ## 6. Procedimiento de Despliegue Modalidad B: Ejecución Híbrida para Desarrollo y Auditoría en Vivo
 
-### Paso 1: Sincronización de Esquema Relacional, Poblado Inicial y Backend (Terminal 1)
+### Paso 1: Sincronización de Esquema Relacional (3FN), Poblado Inicial y Backend (Terminal 1)
 
 ~~~powershell
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
@@ -218,28 +218,29 @@ npx prisma studio
 
 ## 7. Verificación de Servicios y Pruebas Post-Despliegue (Smoke Tests)
 
-### 7.1. Comprobación de Salud de la API y Persistencia en PostgreSQL
+### 7.1. Comprobación de Salud de la API y Persistencia 3FN en PostgreSQL
 ~~~powershell
 Invoke-RestMethod -Uri "http://localhost:4000/api/health" -Method Get
 ~~~
-* **Resultado esperado:** Respuesta JSON con `"ok": true`, `"estadoBD": "Conectado a PostgreSQL (safeshift_db)"` y `"operariosRegistrados": 24`.
+* **Resultado esperado:** Respuesta JSON con `"ok": true`, `"estadoBD": "Conectado a PostgreSQL (safeshift_db) — Normalizado 3FN"` y `"operariosRegistrados": 24`.
 
-### 7.2. Verificación de Control de Concurrencia Estricta (Cumplimiento RNF-02)
+### 7.2. Verificación de Transacción ACID y Control de Concurrencia Estricta (Cumplimiento RNF-02)
 ~~~powershell
-Invoke-RestMethod -Uri "http://localhost:4000/api/reassign" -Method Post -ContentType "application/json" -Body '{"workerId":"w-1","accionPreventiva":"Bloqueado Preventivo (Descanso 24h)","substituteId":"w-10","motivo":"Reasignacion preventiva Art. 38"}'
+Invoke-RestMethod -Uri "http://localhost:4000/api/reassign" -Method Post -ContentType "application/json" -Body '{"workerId":"w-1","accionPreventiva":"Bloqueado Preventivo (Descanso 24h)","substituteId":"w-10","motivo":"Prueba 3FN Art. 38"}'
 ~~~
-* **Resultado esperado:** La primera petición ejecuta la transacción ACID (`HTTP 200 OK`). Al enviar una segunda petición consecutiva sobre el mismo operario (`w-1`), el servidor rechaza inmediatamente la operación con código **`HTTP 409 Conflict`** e imprime la alerta `[BLOQUEO CONCURRENCIA RNF02]` en la consola del backend.
+* **Resultado esperado:** La primera petición ejecuta la transacción ACID en las tablas normalizadas (`HTTP 200 OK` con `"Reasignación guardada transaccionalmente en PostgreSQL (3FN)"`). Al enviar una segunda petición consecutiva sobre el mismo operario (`w-1`), el servidor rechaza inmediatamente la operación con código **`HTTP 409 Conflict`** e imprime la alerta `[BLOQUEO CONCURRENCIA RNF02]` en la consola del backend.
 
 ### 7.3. Verificación de Inferencia del Motor de Machine Learning y Explicabilidad de Caja Blanca
 ~~~powershell
 Invoke-RestMethod -Uri "http://localhost:4000/api/predict" -Method Post -ContentType "application/json" -Body '{"horasSemanales":56,"nochesConsecutivas":4,"ultimoDescansoHoras":8,"workerId":"w-1"}'
 ~~~
-* **Resultado esperado:** El backend invoca `src/ml/predecir_turno.py`, evalúa los parámetros en `motor_predictivo_safeshift.pkl`, retorna `"riesgo": 85` y `"nivel": "CRÍTICO"` junto al desglose de Caja Blanca e inserta el registro en la tabla `PrediccionFatiga`.
+* **Resultado esperado:** El backend invoca `src/ml/predecir_turno.py`, evalúa los parámetros en `motor_predictivo_safeshift.pkl`, retorna `"riesgo": 85` y `"nivel": "CRÍTICO"` junto al desglose de Caja Blanca e inserta el registro atómico (`riesgo_porcentaje`, `nivel_riesgo`, `peso_horas`, `peso_noches`, `peso_descanso` y `factor_critico`) en la tabla `PrediccionFatiga`.
 
 ---
 
 ## 8. Resolución de Problemas Frecuentes (Troubleshooting)
 
 * **Error `P1001` (No se alcanza el servidor de base de datos en `localhost:5432`):** Verificar que el servicio de PostgreSQL en Windows se encuentre en estado *Iniciado* o que el contenedor `safeshift_postgres` en Docker Desktop esté corriendo.
+* **Migración limpia tras cambios estructurales en `schema.prisma`:** Ejecutar `npx prisma db push --force-reset` seguido de `node --experimental-strip-types prisma/seed.ts`.
 * **Restricción de ejecución de scripts en PowerShell:** Ejecutar previamente `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass`.
 * **Reinicio limpio de datos de demostración:** Ejecutar `node --experimental-strip-types prisma/seed.ts` desde la raíz del proyecto.

@@ -11,65 +11,67 @@ model Usuario {
   id            Int      @id @default(autoincrement())
   rut           String   @unique
   nombre        String
-  rol           String   @default("Supervisor de Turno") // Supervisor de Turno | Analista RRHH / Prevencionista | Administrador TI
+  rol           String
   email         String   @unique
   password_hash String
   activo        Boolean  @default(true)
   creadoEn      DateTime @default(now())
+
+  historialesAutorizados HistorialReasignacion[] @relation("UsuarioAutoriza")
 }
 
 model Trabajador {
-  id                    String             @id @default(uuid())
-  rut                   String             @unique
+  id                    String  @id @default(uuid())
+  rut                   String  @unique
   nombre                String
   apellido              String
-  cargo                 String             @default("Operario Logístico")
-  riesgo                Int                @default(15)
-  nivel_riesgo          String             @default("NORMAL") // NORMAL | ALERTA | CRITICO
-  estado_disponibilidad String             @default("DISPONIBLE") // DISPONIBLE | EN_TURNO | BLOQUEADO_PREVENTIVO
-  ultimo_descanso_horas Int                @default(16)
-  sustituto_asignado    String?
-  accion_preventiva     String?
-  motivo_reasignacion   String?
-  fecha_reasignacion    String?
-  activo                Boolean            @default(true)
-  turnos                Turno[]
-  predicciones          PrediccionFatiga[]
+  cargo                 String
+  estado_disponibilidad String  @default("DISPONIBLE")
+  ultimo_descanso_horas Int     @default(16)
+  activo                Boolean @default(true)
+
+  turnos                  Turno[]
+  predicciones            PrediccionFatiga[]
+  reasignacionesOrigen    HistorialReasignacion[] @relation("OrigenReasignacion")
+  reasignacionesReemplazo HistorialReasignacion[] @relation("ReemplazoReasignacion")
 }
 
 model Turno {
   id                       Int        @id @default(autoincrement())
   trabajadorId             String
-  tipo_turno               String     @default("Noche") // Noche | Día | Mixto
+  trabajador               Trabajador @relation(fields: [trabajadorId], references: [id], onDelete: Cascade)
+  tipo_turno               String
   fecha_inicio             DateTime   @default(now())
   fecha_fin                DateTime
   horas_acumuladas_semana  Int        @default(45)
-  descansos_compensatorios Int        @default(1)
+  descansos_compensatorios Int        @default(2)
   noches_consecutivas      Int        @default(0)
-  estado_turno             String     @default("ACTIVO") // ACTIVO | REASIGNADO | FINALIZADO
-  trabajador               Trabajador @relation(fields: [trabajadorId], references: [id], onDelete: Cascade)
+  estado_turno             String     @default("ACTIVO")
 }
 
 model PrediccionFatiga {
-  id                     Int        @id @default(autoincrement())
-  trabajadorId           String
-  fecha_calculo          DateTime   @default(now())
-  score_probabilidad     Float      @default(0.15)
-  nivel_riesgo           String     @default("NORMAL")
-  factores_determinantes String     // JSON con pesos de variables (Caja Blanca)
-  requiere_bloqueo       Boolean    @default(false)
-  trabajador             Trabajador @relation(fields: [trabajadorId], references: [id], onDelete: Cascade)
+  id                Int        @id @default(autoincrement())
+  trabajadorId      String
+  trabajador        Trabajador @relation(fields: [trabajadorId], references: [id], onDelete: Cascade)
+  fecha_calculo     DateTime   @default(now())
+  riesgo_porcentaje Int
+  nivel_riesgo      String
+  peso_horas        Int
+  peso_noches       Int
+  peso_descanso     Int
+  factor_critico    String
 }
 
 model HistorialReasignacion {
-  id                  Int      @id @default(autoincrement())
-  fecha               String
-  trabajadorId        String
-  trabajadorOrigen    String
-  rutOrigen           String
-  trabajadorReemplazo String
-  accion              String
-  motivo              String
-  supervisor          String   @default("Supervisor de Turno")
-  creadoEn            DateTime @default(now())
+  id                    Int         @id @default(autoincrement())
+  fecha                 String
+  trabajadorOrigenId    String
+  trabajadorOrigen      Trabajador  @relation("OrigenReasignacion", fields: [trabajadorOrigenId], references: [id], onDelete: Cascade)
+  trabajadorReemplazoId String?
+  trabajadorReemplazo   Trabajador? @relation("ReemplazoReasignacion", fields: [trabajadorReemplazoId], references: [id], onDelete: SetNull)
+  usuarioId             Int
+  usuario               Usuario     @relation("UsuarioAutoriza", fields: [usuarioId], references: [id], onDelete: Restrict)
+  accion                String
+  motivo                String
+  creadoEn              DateTime    @default(now())
 }
