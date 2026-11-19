@@ -1,41 +1,40 @@
-# Documento de Diseño Arquitectónico, Modelo de Datos (DER) y Diagramas UML — SafeShift Predictor
+# Diseño Arquitectónico, Modelo de Datos (3FN) y Diagramas UML — SafeShift Predictor
 
-**Responsable:** Benjamín Berrios (en colaboración con Ignacio Cuevas)  
-**Competencias Evaluadas:** C3 (Construcción de modelos de datos escalables) y C4 (Desarrollo e integración de software).
+**Proyecto:** SafeShift Predictor: Sistema Predictivo de Fatiga y Prevención de Riesgos Laborales  
+**Asignatura:** Capstone (PTY4614) — Ingeniería en Informática, Duoc UC (Sede Plaza Vespucio)  
+**Responsable Documentación y Normativa:** Benjamín Berrios  
+**Arquitectura Backend y Datos (3FN):** Ignacio Cuevas  
 
 ---
 
-## 1. Arquitectura de la Solución
+## 1. Arquitectura de la Solución (N-Tier en 3 Capas Contenerizadas)
 
-**SafeShift Predictor** implementa una arquitectura cliente-servidor desacoplada en **3 capas** contenerizada mediante Docker:
-
-1. **Capa de Presentación (Frontend — Puerto `3000`):** Aplicación SPA construida con **React 19, TypeScript, Vite y Tailwind CSS**. Proporciona el Dashboard de Turnos Activos, el Modal de Reasignación Preventiva, el Módulo de Ingesta Manual/CSV, el Control de Acceso por Roles y el Historial Transaccional de RRHH.
-2. **Capa de Lógica de Negocio e Integración (Backend API REST — Puerto `4000`):** Servidor **Node.js + Express + TypeScript** que expone los endpoints transaccionales (`/api/workers`, `/api/history`, `/api/reassign`, `/api/predict`, `/api/workers/ingest`), gestionando la comunicación con la base de datos a través de **Prisma ORM** e invocando el motor de Machine Learning mediante procesos hijos (`node:child_process`).
-3. **Capa de Datos y Ciencia de Datos (Persistencia & ML — Puerto `5432`):**
-   * **Base de Datos Relacional:** Motor **PostgreSQL 15** (`safeshift_db`) que garantiza integridad referencial y transacciones ACID.
-   * **Motor Predictivo ML:** Modelo `RandomForestClassifier` serializado (`src/ml/motor_predictivo_safeshift.pkl`) consumido por `src/ml/predecir_turno.py` y entrenado con `datos_trabajadores.csv` (generado por `generar_datos_laborales.py` bajo la Ley 19.628).
-
-### Diagrama de Arquitectura y Comunicación entre Servicios
+El sistema implementa una arquitectura desacoplada en tres capas orquestadas mediante `docker-compose.yml`, garantizando aislamiento entre la interfaz de usuario, la lógica transaccional y la persistencia/inferencia predictiva:
 
 ```mermaid
-graph LR
-    subgraph Capa_Presentacion ["Capa de Presentación (Puerto 3000)"]
-        UI["React 19 + Vite + Tailwind<br/>(Dashboard Supervisor / RRHH)"]
+flowchart LR
+    User((Supervisor / Analista RRHH / Prevencionista))
+
+    subgraph Docker [Infraestructura Contenerizada — Docker Compose]
+        subgraph Capa1 [Capa de Presentación — Puerto 3000]
+            UI[Frontend SPA: React 19 + TypeScript + Vite + Tailwind\nLogin RBAC, Turnos, Motor ML Caja Blanca, Historial CSV, Reportes]
+        end
+
+        subgraph Capa2 [Capa de Negocio API REST — Puerto 4000]
+            API[Backend Node.js + Express + TypeScript\nsrc/index.ts — Control Concurrencia RNF02 HTTP 409]
+            ORM[Prisma ORM Client\nTransacciones ACID prisma.$transaction]
+        end
+
+        subgraph Capa3 [Capa de Persistencia y Motor ML]
+            DB[(PostgreSQL 15 — safeshift_db\nPuerto 5432 | 5 Tablas Normalizadas 3FN)]
+            PY[Script Inferencia Python\nsrc/ml/predecir_turno.py]
+            PKL[[Modelo RandomForestClassifier\nmotor_predictivo_safeshift.pkl]]
+        end
     end
 
-    subgraph Capa_Negocio ["Capa de Negocio API REST (Puerto 4000)"]
-        API["Servidor Node.js + Express<br/>(src/index.ts)"]
-        ORM["Prisma ORM Client<br/>(Transacciones ACID)"]
-    end
-
-    subgraph Capa_Datos_ML ["Capa de Datos y Motor ML"]
-        DB[("PostgreSQL 15<br/>safeshift_db (Puerto 5432)")]
-        PY["Script Inferencia Python<br/>(src/ml/predecir_turno.py)"]
-        PKL[["Modelo Random Forest<br/>(motor_predictivo_safeshift.pkl)"]]
-    end
-
-    UI -- "HTTP JSON (GET / POST)" --> API
+    User -- "Navegador Web (HTTP)" --> UI
+    UI -- "REST API / JSON" <--> API
     API --> ORM
-    ORM -- "SQL Transaccional" --> DB
-    API -- "execFile(horas, noches, descanso)" --> PY
+    ORM -- "Consultas SQL Tipadas / JOIN 3FN" <--> DB
+    API -- "execFile(horas, noches, descanso)\nAnonimizado Ley 19.628" --> PY
     PY -- "joblib.load()" --> PKL
