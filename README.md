@@ -1,83 +1,89 @@
 # SafeShift Predictor: Sistema Predictivo de Fatiga y Prevención de Riesgos Laborales
 
-Plataforma web predictiva y transaccional orientada a la prevención activa de accidentes laborales por fatiga extrema, desgaste crónico (*burnout*) y microsueños en el sector de logística, distribución y transporte de carga pesada en Chile.
-
----
-
 ## 1. Descripción del Proyecto
+**SafeShift Predictor** es una plataforma web predictiva y transaccional orientada al sector de logística, distribución y transporte de carga pesada en Chile.
 
-* **¿Qué problema resuelve?:** En la industria logística y de transporte terrestre en Chile, la fatiga laboral suele gestionarse de manera reactiva (después de que ocurre un accidente vial, daño de activos o baja médica) y subjetiva. Además, las empresas enfrentan dificultades para auditar en tiempo real el cumplimiento del **Artículo 38 del Código del Trabajo** sobre jornadas excepcionales y descansos compensatorios.
-* **¿Qué hace la solución?:** **SafeShift Predictor** transforma la gestión de turnos en un modelo preventivo e inteligente sin requerir hardware biométrico invasivo en cabina. El sistema integra:
-  1. Un **Generador de Datos Sintéticos** en Python (`src/ml/generar_datos_laborales.py`) que emula patrones estadísticos reales de fatiga cumpliendo con la **Ley N° 19.628** sobre Protección de la Vida Privada (`datos_trabajadores.csv` con 1.000 registros).
-  2. Un **Motor Predictivo de Machine Learning** (`RandomForestClassifier` serializado en `src/ml/motor_predictivo_safeshift.pkl` y consumido vía `src/ml/predecir_turno.py`) con explicabilidad de **Caja Blanca**, que evalúa horas semanales acumuladas, turnos nocturnos consecutivos y horas de descanso previo para clasificar el riesgo en **NORMAL (<50%)**, **ALERTA (50%–79%)** o **CRÍTICO (>=80%)**.
-  3. Un **Dashboard Web Transaccional** que permite ejecutar bloqueos preventivos, asignar sustitutos disponibles de bajo riesgo en tiempo real mediante transacciones ACID (`prisma.$transaction`) en PostgreSQL, simular inferencias en vivo e ingerir lotes de turnos por CSV.
-* **¿A quién va dirigido (Usuarios y Stakeholders)?:**
-  * **Supervisores de Operaciones / Despacho:** Monitorean el riesgo de las cuadrillas en tiempo real, ingresan turnos y ejecutan reasignaciones preventivas vinculantes sobre la base de datos.
-  * **Prevencionistas de Riesgos y Analistas de RRHH:** Auditan la bitácora transaccional de bloqueos y descansos compensatorios (Art. 38) y analizan métricas de reducción de siniestralidad.
-  * **Administradores de TI:** Gestionan el control de acceso basado en roles (RBAC), la base de datos y el despliegue en contenedores Docker.
+* **¿Qué problema resuelve?** Reemplaza la gestión reactiva de la fatiga laboral por un modelo preventivo basado en datos, mitigando riesgos de siniestralidad por microsueño y resguardando el cumplimiento del **Artículo 38 del Código del Trabajo** y la **Ley N° 19.628** sobre Protección de la Vida Privada.
+* **¿Qué hace?** Procesa variables operativas anónimas (horas semanales acumuladas, turnos nocturnos consecutivos y horas de descanso) mediante un clasificador de Machine Learning (`RandomForestClassifier` con **99,50% de exactitud** y **Recall 1,0000** en clase crítica), ofrece Explicabilidad de Caja Blanca y permite ejecutar reasignaciones de turnos con transacciones ACID, bloqueo de concurrencia (`HTTP 409 Conflict`) y exportación de auditoría RRHH en formato CSV.
+* **¿A quién va dirigido?** Supervisores de Operaciones/Despacho, Analistas de Recursos Humanos (RRHH) y Prevencionistas de Riesgos.
 
----
+## 2. Tecnologías Utilizadas
+* **Frontend:** React 19, TypeScript, Vite, Tailwind CSS, Lucide Icons.
+* **Backend:** Node.js (v24+), Express, TypeScript, Prisma ORM.
+* **Base de Datos:** PostgreSQL 15 normalizada en **Tercera Forma Normal (3FN)** con 5 entidades (`Usuario`, `Trabajador`, `Turno`, `PrediccionFatiga`, `HistorialReasignacion`).
+* **Machine Learning y Ciencia de Datos:** Python 3, Scikit-Learn (`RandomForestClassifier`), Pandas, NumPy, Joblib.
+* **DevOps y Portabilidad:** Docker y Docker Compose.
 
-## 2. Tecnologías Utilizadas (Stack Tecnológico)
-
-* **Frontend (Capa de Presentación — Puerto `3000`):** React 19, TypeScript, Vite, Tailwind CSS, Lucide Icons.
-* **Backend (Capa Lógica y Transaccional — Puerto `4000`):** Node.js, Express, TypeScript, CORS, integración de procesos Python vía `node:child_process`.
-* **Base de Datos y ORM (Capa de Persistencia — Puerto `5432`):** PostgreSQL 15 (`safeshift_db`) y **Prisma ORM** (migraciones declarativas, tipado estricto y transacciones ACID).
-* **Ciencia de Datos y Machine Learning:** Python 3, Scikit-Learn (`RandomForestClassifier`), Pandas, NumPy, Joblib, Jupyter Notebook (`entrenamiento_modelo.ipynb`).
-* **Infraestructura, DevOps y Control de Versiones:** Docker, Docker Compose (`Dockerfile`, `frontend/Dockerfile`, `docker-compose.yml`), Git y GitHub.
-
----
-
-## 3. Integrantes del Equipo y Roles
-
-| Integrante | RUT | Rol en el Proyecto | Responsabilidades Principales |
-| :--- | :--- | :--- | :--- |
-| **Ignacio Cuevas** | 21.703.347-0 | **Ingeniero Backend, Arquitectura de Datos & DevOps** | Diseño e implementación del esquema relacional en Prisma ORM / PostgreSQL, desarrollo de la API REST transaccional, conexión con el modelo `.pkl` y contenerización Docker. |
-| **Benjamín Berrios** | 21.683.327-9 | **Analista de Gestión de Personas, Reglas de Negocio & Documentación** | Definición de reglas normativas (Art. 38 Código del Trabajo y Ley 19.628), diseño arquitectónico, diagramas DER/UML, gestión de *Daily Scrum* e informes técnicos. |
-| **Javiera Vargas** | 21.369.093-0 | **Ingeniera de Machine Learning, Datos Sintéticos & QA** | Desarrollo del generador de datos sintéticos (`generar_datos_laborales.py`), entrenamiento/calibración del motor predictivo (`predecir_turno.py`) y ejecución del Plan de Pruebas QA. |
-| **Matías Carrasco** | 20.247.894-8 | **Ingeniero Frontend & Integración UI/UX** | Construcción del Dashboard interactivo en React + TypeScript, control de acceso por roles (Login RBAC), simulador visual de Caja Blanca ML, módulo de ingesta CSV y modales transaccionales. |
-
----
+## 3. Arquitectura de la Solución
+El sistema opera bajo una arquitectura **N-Tier desacoplada en 3 capas** contenerizada con Docker:
+1. **Capa de Presentación (`frontend/`, puerto `3000`):** SPA React con autenticación RBAC, monitoreo de flota (24 operarios), modal de reasignación transaccional, laboratorio ML en vivo, reportes dinámicos y exportación CSV Art. 38.
+2. **Capa de Negocio (`src/index.ts`, puerto `4000`):** API REST Express + Prisma ORM con transacciones atómicas (`prisma.$transaction`), control de concurrencia `RNF02` (`HTTP 409`), validación de sustituto `RF05` y puente `execFile` hacia Python.
+3. **Capa de Persistencia y Motor ML (`prisma/` y `src/ml/`, puerto `5432`):** PostgreSQL 15 en 3FN conectada por claves foráneas puras (`trabajadorOrigenId`, `trabajadorReemplazoId`, `usuarioId`) y modelo serializado `motor_predictivo_safeshift.pkl`.
 
 ## 4. Metodología de Trabajo
+El equipo implementó una **Metodología Híbrida**:
+* **CRISP-DM:** Para comprensión normativa, generación sintética libre de sesgos (`1.000` registros), entrenamiento/evaluación estratificada del modelo y despliegue productivo.
+* **Marco Ágil (Scrum / Kanban):** Para planificación por Sprints, seguimiento documentado en `Fase 2/Daily_Scrum_SafeShift_Predictor.xlsx`, control de versiones en GitHub y ciclos de pruebas QA (`CP-U01` a `CP-S01`).
 
-El equipo aplica una **Metodología Híbrida** adaptada a proyectos que combinan ingeniería de software transaccional con ciencia de datos:
-1. **CRISP-DM (Cross-Industry Standard Process for Data Mining):** Guía el ciclo de vida del motor predictivo (Comprensión del Negocio y Normativa Laboral, Generación y Preparación del Dataset Sintético, Modelado del Clasificador *Random Forest*, Evaluación de Precisión >80% y Despliegue en Producción).
-2. **Marco Ágil Scrum / Kanban:** El desarrollo incremental de la plataforma se organiza en Sprints, respaldado por historias de usuario priorizadas (*Product Backlog*), criterios de aceptación (*Definition of Done*), control de versiones colaborativo en GitHub y seguimiento periódico documentado en `Fase 2/Daily_Scrum_SafeShift_Predictor.xlsx`.
+## 5. Integrantes del Equipo y Roles
+| Integrante | RUT | Rol Principal |
+| :--- | :--- | :--- |
+| **Ignacio Cuevas** | 21.703.347-0 | Ingeniero Backend, Arquitectura de Datos (3FN) y DevOps (Docker) |
+| **Benjamín Berrios** | 21.683.327-9 | Analista de Gestión de Personas (RRHH), Reglas de Negocio, Scrum y Documentación |
+| **Javiera Vargas** | 21.369.093-0 | Ingeniera de Machine Learning, Datos Sintéticos (Ley 19.628) y QA |
+| **Matías Carrasco** | 20.247.894-8 | Ingeniero Frontend React/TypeScript, UI/UX e Integración Transaccional |
 
----
+## 6. Estructura del Repositorio
+~~~text
+safeshift-predictor/
+├── Fase 1/                                          # Definición Proyecto APT y presentación Fase 1
+├── Fase 2/                                          # Documentación, evidencias y cierre Fase 2
+│   ├── Informe_Final_Fase_2_SafeShift_Predictor.docx
+│   ├── Daily_Scrum_SafeShift_Predictor.xlsx
+│   ├── Diseno_Arquitectonico_y_UML_SafeShift.md
+│   ├── Plan_de_Pruebas_QA_SafeShift.md
+│   ├── Manual_Despliegue_Docker_SafeShift.md
+│   ├── Modelo_Entidad-Relacion_DER.png              # DER definitivo en 3FN (5 tablas)
+│   ├── Diagrama de Secuencia.jpg
+│   └── metricas_modelo_ml.png
+├── prisma/                                          # Esquema 3FN y poblado de 24 operarios
+├── src/                                             # API REST Express + Motor ML Python (.pkl)
+├── frontend/                                        # Dashboard React 19 + Vite + Tailwind
+├── Dockerfile                                       # Contenedor Backend (Node.js + Python)
+├── docker-compose.yml                               # Orquestación completa (DB, Backend, Frontend)
+├── .env.example                                     # Plantilla de variables de entorno
+└── README.md
+~~~
 
-## 5. Arquitectura de la Solución y Modelo de Datos
+## 7. Instrucciones de Ejecución Local y con Docker
 
-El sistema implementa una arquitectura **N-Tier desacoplada en 3 capas** y orquestada con Docker:
+### Opción A: Despliegue Contenerizado (Docker Compose)
+~~~bash
+cp .env.example .env
+docker compose up -d --build
+~~~
+* **Frontend:** `http://localhost:3000`
+* **API Healthcheck:** `http://localhost:4000/api/health`
 
-```mermaid
-graph LR
-    subgraph Capa_Presentacion ["Capa de Presentación (Puerto 3000)"]
-        UI["Frontend SPA: React 19 + TypeScript + Tailwind<br/>(Login RBAC, Turnos, Motor ML Caja Blanca, Historial RRHH)"]
-    end
+### Opción B: Ejecución en Desarrollo Local
+~~~powershell
+# 1. Instalar dependencias y sincronizar base de datos 3FN
+npm install
+pip install joblib pandas scikit-learn
+npx prisma generate
+npx prisma db push
+node --experimental-strip-types prisma/seed.ts
 
-    subgraph Capa_Negocio ["Capa de Negocio API REST (Puerto 4000)"]
-        API["Servidor Node.js + Express<br/>(src/index.ts)"]
-        ORM["Prisma ORM Client<br/>(Transacciones ACID prisma.$transaction)"]
-    end
+# 2. Encender Backend (Terminal 1)
+node --experimental-strip-types src/index.ts
 
-    subgraph Capa_Datos_ML ["Capa de Persistencia y Motor ML"]
-        DB[("PostgreSQL 15<br/>safeshift_db (Puerto 5432)")]
-        PY["Script Inferencia Python<br/>(src/ml/predecir_turno.py)"]
-        PKL[["Modelo Random Forest<br/>(motor_predictivo_safeshift.pkl)"]]
-    end
+# 3. Encender Frontend (Terminal 2)
+cd frontend
+npm install --legacy-peer-deps
+npm run dev
+~~~
 
-    UI -- "Peticiones HTTP / JSON" --> API
-    API --> ORM
-    ORM -- "Consultas Tipadas y Transacciones" --> DB
-    API -- "execFile(horas, noches, descanso)" --> PY
-    PY -- "joblib.load()" --> PKL
-```
-
-## 6. Instrucciones para Ejecución Local
-*(Nota: Estas instrucciones se irán actualizando durante la Fase 2 del desarrollo).*
-1. Clonar este repositorio: `git clone https://github.com/tu-usuario/safeshift-predictor.git`
-2. Instalar Docker Desktop en la máquina local.
-3. Ejecutar el comando de orquestación (por definir): `docker-compose up -d`
-4. Acceder al dashboard en `http://localhost:3000`
+**Credenciales de Acceso RBAC (Demo):**
+* **Supervisor de Turno:** `supervisor@safeshift.cl` / `safeshift2026`
+* **Analista RRHH:** `rrhh@safeshift.cl` / `safeshift2026`
+* **Prevencionista:** `prevencion@safeshift.cl` / `safeshift2026`
