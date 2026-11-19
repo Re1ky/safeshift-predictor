@@ -176,7 +176,7 @@ sequenceDiagram
 
     Sup->>UI: Clic en "REASIGNAR" sobre operario en riesgo CRÍTICO
     UI-->>Sup: Muestra modal con sustitutos filtrados (RF05: riesgo NORMAL y DISPONIBLE)
-    Sup->>UI: Selecciona medida Art. 38, sustituto y motivo; confirma
+    Sup->>UI: Selecciona medida Art. 38, sustituto y motivo, y confirma
     UI->>API: POST /api/reassign { workerId, substituteId, accionPreventiva, motivo, usuarioId }
     API->>DB: Consulta estado_disponibilidad de Trabajador origen
 
