@@ -26,7 +26,7 @@ flowchart LR
         end
 
         subgraph Capa3 [Capa de Persistencia y Motor ML]
-            DB[(PostgreSQL 15 — safeshift_db\nPuerto 5432 | 5 Tablas Normalizadas 3FN)]
+            DB[(PostgreSQL 15 — safeshift_db\nPuerto 5432 - 5 Tablas Normalizadas 3FN)]
             PY[Script Inferencia Python\nsrc/ml/predecir_turno.py]
             PKL[[Modelo RandomForestClassifier\nmotor_predictivo_safeshift.pkl]]
         end
